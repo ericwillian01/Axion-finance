@@ -19,6 +19,7 @@ const State = (() => {
     userName: 'Usuário',
     investorProfile: 'moderado',
     expenses: [],
+    investments: [],          // ← portfólio de aportes
     categories: [
       { id: 'mercado',    name: 'Mercado',     color: '#4FC3F7', limit: 30 },
       { id: 'lazer',      name: 'Lazer',       color: '#FF8A65', limit: 15 },
@@ -45,6 +46,7 @@ const State = (() => {
       data = raw ? { ...DEFAULT, ...JSON.parse(raw) } : { ...DEFAULT };
       // Garante arrays
       if (!Array.isArray(data.expenses)) data.expenses = [];
+      if (!Array.isArray(data.investments)) data.investments = [];
       if (!Array.isArray(data.categories)) data.categories = [...DEFAULT.categories];
       if (!Array.isArray(data.goals)) data.goals = [];
     } catch (e) {
@@ -65,6 +67,7 @@ const State = (() => {
   function getCategories() { return data.categories || []; }
   function getGoals() { return data.goals || []; }
   function getProfile() { return data.investorProfile || 'moderado'; }
+  function getInvestments() { return data.investments || []; }
 
   // Onboarding
   function startOnboarding() {
@@ -102,7 +105,7 @@ const State = (() => {
   }
 
   return { load, save, get, getSalary, getExpenses, getCategories, getGoals, getProfile,
-           startOnboarding, nextOnboarding, finishOnboarding };
+           getInvestments, startOnboarding, nextOnboarding, finishOnboarding };
 })();
 
 
@@ -154,8 +157,17 @@ const UI = (() => {
     renderDashboard();
     renderCategoryList();
     renderExpenses();
+    renderPortfolio();
     renderGoals();
     renderInvestments();
+
+    // Sync drawer inputs
+    const dSalary = document.getElementById('drawer-salary');
+    if (dSalary) dSalary.value = d.salary || '';
+    const dTheme = document.getElementById('drawer-theme-toggle');
+    if (dTheme) dTheme.checked = (d.settings.theme !== 'light');
+    const dAlert = document.getElementById('drawer-alert-limit');
+    if (dAlert) dAlert.checked = d.settings.alertLimit !== false;
 
     // Nav event listeners
     _bindNav();
@@ -789,6 +801,167 @@ const UI = (() => {
     document.getElementById('goal-modal').classList.add('hidden');
   }
 
+  // ===== INVESTMENT MODAL =====
+  function openInvestmentModal() {
+    document.getElementById('inv-asset').value = '';
+    document.getElementById('inv-value').value = '';
+    document.getElementById('inv-qty').value = '';
+    document.getElementById('inv-notes').value = '';
+    document.getElementById('inv-date').value = _today();
+    document.getElementById('investment-modal').classList.remove('hidden');
+    setTimeout(() => document.getElementById('inv-asset').focus(), 50);
+  }
+  function closeInvestmentModal() {
+    document.getElementById('investment-modal').classList.add('hidden');
+  }
+
+  // ===== SETTINGS DRAWER =====
+  function openSettingsDrawer() {
+    const d = State.get();
+    const dSalary = document.getElementById('drawer-salary');
+    if (dSalary) dSalary.value = d.salary || '';
+    const dTheme = document.getElementById('drawer-theme-toggle');
+    if (dTheme) dTheme.checked = (d.settings.theme !== 'light');
+    const dAlert = document.getElementById('drawer-alert-limit');
+    if (dAlert) dAlert.checked = d.settings.alertLimit !== false;
+    document.getElementById('settings-drawer').classList.remove('hidden');
+    document.getElementById('settings-drawer-overlay').classList.remove('hidden');
+  }
+  function closeSettingsDrawer() {
+    document.getElementById('settings-drawer').classList.add('hidden');
+    document.getElementById('settings-drawer-overlay').classList.add('hidden');
+  }
+
+  // ===== TABS: Gastos page =====
+  function switchGastosTab(tab) {
+    // Tab buttons
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.tab === tab);
+    });
+    // Tab contents
+    const despesas = document.getElementById('tab-despesas');
+    const portfolio = document.getElementById('tab-portfolio');
+    if (tab === 'despesas') {
+      despesas.classList.add('active-tab');   despesas.classList.remove('hidden-tab');
+      portfolio.classList.remove('active-tab'); portfolio.classList.add('hidden-tab');
+      // update add button
+      const btn = document.getElementById('gastos-add-btn');
+      if (btn) { btn.textContent = '+ Novo Gasto'; btn.onclick = () => openExpenseModal(); }
+    } else {
+      portfolio.classList.add('active-tab');  portfolio.classList.remove('hidden-tab');
+      despesas.classList.remove('active-tab'); despesas.classList.add('hidden-tab');
+      const btn = document.getElementById('gastos-add-btn');
+      if (btn) { btn.textContent = '+ Novo Aporte'; btn.onclick = () => openInvestmentModal(); }
+      renderPortfolio();
+    }
+  }
+
+  // ===== PORTFOLIO RENDER =====
+  function renderPortfolio() {
+    let investments = State.getInvestments();
+
+    // KPIs
+    const allTotal = investments.reduce((s, i) => s + i.value, 0);
+    const monthInv = _filterByMonthArr(investments);
+    const monthTotal = monthInv.reduce((s, i) => s + i.value, 0);
+    const uniqueAssets = new Set(investments.map(i => i.asset.toLowerCase())).size;
+
+    _setText('port-total', _fmt(allTotal));
+    _setText('port-month', _fmt(monthTotal));
+    _setText('port-month-count', `${monthInv.length} operaç${monthInv.length === 1 ? 'ão' : 'ões'}`);
+    _setText('port-assets', String(uniqueAssets));
+
+    // Filters
+    const typeFilter = document.getElementById('port-filter-type')?.value || 'all';
+    const period = document.getElementById('port-filter-period')?.value || 'month';
+    const sort = document.getElementById('port-filter-sort')?.value || 'date-desc';
+
+    let filtered = [...investments];
+    if (typeFilter !== 'all') filtered = filtered.filter(i => i.type === typeFilter);
+    if (period === 'month') filtered = _filterByMonthArr(filtered);
+    if (period === 'week') {
+      const weekAgo = new Date(Date.now() - 7*24*60*60*1000);
+      filtered = filtered.filter(i => new Date(i.date) >= weekAgo);
+    }
+    filtered.sort((a, b) => {
+      if (sort === 'date-desc') return new Date(b.date) - new Date(a.date);
+      if (sort === 'value-desc') return b.value - a.value;
+      if (sort === 'value-asc') return a.value - b.value;
+      return 0;
+    });
+
+    // Type breakdown
+    _renderPortBreakdown(investments);
+
+    // List
+    const list = document.getElementById('portfolio-list');
+    if (!list) return;
+
+    if (filtered.length === 0) {
+      list.innerHTML = `<div class="empty-state">
+        <span class="empty-icon">◇</span>
+        <p>Nenhum aporte encontrado.</p>
+        <button class="btn-ghost btn-sm" onclick="UI.openInvestmentModal()">Registrar aporte</button>
+      </div>`;
+      return;
+    }
+
+    const typeLabels = { cripto:'Cripto', acoes:'Ações', fii:'FII', etf:'ETF', 'renda-fixa':'Renda Fixa', outro:'Outro' };
+    const typeIcons  = { cripto:'₿', acoes:'📈', fii:'🏡', etf:'📊', 'renda-fixa':'🔒', outro:'◇' };
+
+    list.innerHTML = filtered.map(inv => `
+      <div class="expense-item">
+        <span class="exp-dot" style="background:${_typeColor(inv.type)}"></span>
+        <div class="exp-info">
+          <span class="exp-desc">${typeIcons[inv.type] || '◇'} ${_esc(inv.asset)}</span>
+          <span class="exp-meta">${_dateLabel(inv.date)}${inv.qty ? ` · ${inv.qty} un.` : ''}${inv.notes ? ` · ${_esc(inv.notes)}` : ''}</span>
+        </div>
+        <span class="inv-type-badge inv-type-${inv.type}">${typeLabels[inv.type] || inv.type}</span>
+        <span class="inv-value">+${_fmt(inv.value)}</span>
+        <button class="exp-del-btn" onclick="Logic.deleteInvestment('${inv.id}')" title="Excluir">✕</button>
+      </div>`
+    ).join('');
+  }
+
+  function _renderPortBreakdown(investments) {
+    const bd = document.getElementById('port-breakdown');
+    if (!bd) return;
+    if (investments.length === 0) { bd.innerHTML = '<p style="color:var(--text-3);font-size:0.85rem">Nenhum dado.</p>'; return; }
+
+    const totByType = {};
+    investments.forEach(i => { totByType[i.type] = (totByType[i.type] || 0) + i.value; });
+    const grand = Object.values(totByType).reduce((s,v) => s+v, 0);
+    const typeLabels = { cripto:'Cripto', acoes:'Ações', fii:'FII', etf:'ETF', 'renda-fixa':'Renda Fixa', outro:'Outro' };
+
+    bd.innerHTML = Object.entries(totByType)
+      .sort((a,b) => b[1]-a[1])
+      .map(([type, val]) => {
+        const pct = grand > 0 ? (val/grand*100) : 0;
+        const color = _typeColor(type);
+        return `<div class="breakdown-item">
+          <span class="bk-dot" style="background:${color}"></span>
+          <span class="bk-name">${typeLabels[type]||type}</span>
+          <div class="bk-bar-wrap">
+            <div class="bk-bar"><div class="bk-bar-fill" style="width:${pct}%;background:${color}"></div></div>
+            <span class="bk-val">${_fmt(val)}</span>
+            <span class="bk-pct">${pct.toFixed(1)}%</span>
+          </div>
+        </div>`;
+      }).join('');
+  }
+
+  function _typeColor(type) {
+    return { cripto:'#FFD54F', acoes:'#4FC3F7', fii:'#A5D6A7', etf:'#CE93D8', 'renda-fixa':'#00E676', outro:'#B0BEC5' }[type] || '#888';
+  }
+
+  function _filterByMonthArr(arr) {
+    const now = new Date();
+    return arr.filter(i => {
+      const d = new Date(i.date);
+      return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+    });
+  }
+
   function showConfirm(title, text, onConfirm) {
     document.getElementById('confirm-title').textContent = title;
     document.getElementById('confirm-text').textContent = text;
@@ -1045,8 +1218,11 @@ const UI = (() => {
 
   return {
     init, navigateTo, renderDashboard, renderCategoryList, renderExpenses,
-    renderCharts, renderGoals, renderInvestments,
+    renderCharts, renderGoals, renderInvestments, renderPortfolio,
     openExpenseModal, closeExpenseModal, openGoalModal, closeGoalModal,
+    openInvestmentModal, closeInvestmentModal,
+    openSettingsDrawer, closeSettingsDrawer,
+    switchGastosTab,
     showConfirm, closeConfirm,
     openLearnDetail, closeLearnDetail,
     toggleAddCategory, toast,
@@ -1341,6 +1517,71 @@ const Logic = (() => {
     );
   }
 
+  // ===== INVESTMENTS (portfólio) =====
+  function addInvestment() {
+    const asset  = document.getElementById('inv-asset').value.trim();
+    const type   = document.getElementById('inv-type').value;
+    const value  = parseFloat(document.getElementById('inv-value').value);
+    const qty    = document.getElementById('inv-qty').value.trim();
+    const date   = document.getElementById('inv-date').value;
+    const notes  = document.getElementById('inv-notes').value.trim();
+
+    if (!asset) { UI.toast('Informe o nome do ativo', 'error'); return; }
+    if (!value || value <= 0) { UI.toast('Informe um valor válido', 'error'); return; }
+    if (!date) { UI.toast('Informe a data', 'error'); return; }
+
+    const d = State.get();
+    d.investments.push({ id: _uid(), asset, type, value, qty: qty || null, date, notes: notes || null });
+    State.save();
+    UI.closeInvestmentModal();
+    UI.renderPortfolio();
+    UI.toast(`Aporte em ${asset} registrado`, 'success');
+  }
+
+  function deleteInvestment(id) {
+    UI.showConfirm('Excluir aporte?', 'Esta ação não pode ser desfeita.', () => {
+      const d = State.get();
+      d.investments = d.investments.filter(i => i.id !== id);
+      State.save();
+      UI.renderPortfolio();
+      UI.toast('Aporte removido');
+    });
+  }
+
+  // ===== DRAWER helpers =====
+  function toggleThemeDrawer() {
+    const isChecked = document.getElementById('drawer-theme-toggle').checked;
+    const d = State.get();
+    d.settings.theme = isChecked ? 'dark' : 'light';
+    document.body.setAttribute('data-theme', d.settings.theme);
+    // keep main settings toggle in sync
+    const tt = document.getElementById('theme-toggle');
+    if (tt) tt.checked = isChecked;
+    State.save();
+  }
+
+  function saveDrawerSalary() {
+    const val = parseFloat(document.getElementById('drawer-salary').value) || 0;
+    const d = State.get();
+    d.salary = val;
+    State.save();
+    // sync settings page input
+    const ss = document.getElementById('settings-salary');
+    if (ss) ss.value = val || '';
+    UI.renderDashboard();
+    UI.renderCategoryList();
+    UI.renderInvestments();
+    UI.toast('Salário salvo', 'success');
+  }
+
+  function saveDrawerAlerts() {
+    const d = State.get();
+    d.settings.alertLimit = document.getElementById('drawer-alert-limit').checked;
+    State.save();
+    const al = document.getElementById('alert-limit');
+    if (al) al.checked = d.settings.alertLimit;
+  }
+
   // ===== HELPERS =====
   function _uid() {
     return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
@@ -1369,8 +1610,10 @@ const Logic = (() => {
     addExpense, deleteExpense,
     addCategory, deleteCategory,
     addGoal, deleteGoal, addToGoal,
+    addInvestment, deleteInvestment,
     updateProfile, simulate,
     saveSettings, toggleTheme,
+    toggleThemeDrawer, saveDrawerSalary, saveDrawerAlerts,
     confirmResetExpenses, confirmResetAll,
   };
 })();
@@ -1420,8 +1663,10 @@ const Logic = (() => {
     if (e.key === 'Escape') {
       document.getElementById('expense-modal')?.classList.add('hidden');
       document.getElementById('goal-modal')?.classList.add('hidden');
+      document.getElementById('investment-modal')?.classList.add('hidden');
       document.getElementById('confirm-modal')?.classList.add('hidden');
       document.getElementById('learn-detail')?.classList.add('hidden');
+      UI.closeSettingsDrawer();
     }
   });
 
